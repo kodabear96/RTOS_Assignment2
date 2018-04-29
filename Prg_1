@@ -1,0 +1,287 @@
+//create a pipe
+//three threads: 
+//A - writes one line of characters from a given "data.txt" file to the pipe  
+//B - reads data from the pipe and passes the data for the thread C.
+//C - reads the line of characters from B and detects whether the characters are from the file header or content. writes content sto "src.txt"
+//needs to calculate total running time form beginning to end - written to shared memory called "shared"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <time.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/shm.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <errno.h>
+#include <stdbool.h>
+
+struct LineData
+{
+  char strLine[256];
+};
+
+#define MESSLENGTH 256
+
+//FUNCTION PROTOTYPES
+double calculateTime(struct timeval startTime, struct timeval endTime);
+void initialiseSharedMemory();
+void initialiseThreads();
+void *threadA(void *arg);
+void *threadB(void *arg);
+void *threadC(void *arg);
+
+//GLOBALS
+struct timeval startTime ,endTime; //start and end times
+void *ptr; //pointer to shared memory object
+pthread_mutex_t Mutex; // Mutex lock
+sem_t SemaphoreA, SemaphoreB, SemaphoreC; // Semaphores
+pthread_t threadIdA, threadIdB, threadIdC; //Thread Ids
+int fileDescriptor[2]; //Array to store file descriptor
+struct LineData lineData; //storage struct used by threads B & C
+static char CollectFromPipe[MESSLENGTH];
+int endOfFile;
+int lineNumber;
+
+
+//MAIN
+int main()
+{
+	 //get start time
+	 gettimeofday(&startTime , NULL);
+	 initialiseSharedMemory();
+	 endOfFile = 0;
+	 lineNumber = 0;
+
+	 /* Create pipe */
+	 if (pipe(fileDescriptor) == -1) {
+	   errno = -1;
+	   perror("Pipe creation failed");
+	   return EXIT_FAILURE;
+	 }
+	 
+	 /* Init threads */
+	 initialiseThreads();
+
+	 //Signal SemaphoreA to start
+	 sem_post(&SemaphoreA);
+
+	 /* Wait for thread termination and status */
+	 void *threadResult;
+	 if (pthread_join(threadIdA, &threadResult)) {
+	   errno = *((int *)threadResult);
+	   perror("Thread A failed");
+	   return EXIT_FAILURE;
+	 } else if (pthread_join(threadIdB, &threadResult)) {
+	   errno = *((int *)threadResult);
+	   perror("Thread B failed");
+	   return EXIT_FAILURE;
+	 } else if (pthread_join(threadIdC, &threadResult)) {
+	   errno = *((int *)threadResult);
+	   perror("Thread C failed");
+	   return EXIT_FAILURE;
+	 }
+	 free(threadResult);
+
+	 //get end time
+	 gettimeofday(&endTime , NULL);
+	 double totalTime = calculateTime(startTime, endTime);
+
+	 //write to the shared memory object
+	 sprintf(ptr, "%lf", totalTime);
+	 
+	 return 0;
+}
+
+void initialiseThreads() {
+  /* Initialise mutex lock */
+  pthread_mutex_init(&Mutex, NULL);
+
+  /* Initialise semaphores and set to 0 */
+  sem_init(&SemaphoreA, 0, 0);
+  sem_init(&SemaphoreB, 0, 0);
+  sem_init(&SemaphoreC, 0, 0);
+
+  /* Create thread attributes */
+  pthread_attr_t attr;
+
+  /* Initialise thread attributes */
+  pthread_attr_init(&attr);
+
+  /* Create threads */
+  //threadIdA may need *
+  pthread_create(&threadIdA, &attr, &threadA, NULL);
+  pthread_create(&threadIdB, &attr, &threadB, NULL);
+  pthread_create(&threadIdC, &attr, &threadC, NULL);
+
+  /* Destroy thread attributes */
+  pthread_attr_destroy(&attr);
+}
+
+void *threadA(void *arg) {
+  /* Wait for Semaphore1 */
+  sem_wait(&SemaphoreA);
+
+  /* Mutex lock program */
+  pthread_mutex_lock(&Mutex);
+
+  /* Print thread information */
+  printf("Thread A running\n");
+
+  // open a text file
+    FILE* file=fopen("data.txt", "r");
+    if (file != NULL) {
+      //265 is ideal line size
+      char strLine[256];
+      int count = 0;
+      while (fgets(strLine, sizeof strLine, file) != NULL) /* read a line */
+	{
+	  if (count == lineNumber)
+	  {
+	    printf("Original File: %s",strLine);
+            write(fileDescriptor[1], strLine, MESSLENGTH);
+	    
+	     /* Release mutex lock */
+	    pthread_mutex_unlock(&Mutex);
+
+	    /* Signal SemaphoreB */
+	    sem_post(&SemaphoreB);
+
+	    sem_wait(&SemaphoreA);
+
+	    /* Mutex lock program */
+	    pthread_mutex_lock(&Mutex);
+	    
+	     /* Print thread information */
+	    printf("Thread A running again!\n");
+
+	    lineNumber++;
+	  }
+	  else
+	  {
+            count++;
+	    printf("Count up to: %d\n", count);
+	  }
+	}
+      fclose(file);
+      endOfFile = 1; 
+      printf("Thread A says end of file!\n");
+    }
+
+  /* Release mutex lock */
+  pthread_mutex_unlock(&Mutex);
+
+  /* Signal SemaphoreB */
+  sem_post(&SemaphoreB);
+
+  return EXIT_SUCCESS;
+}
+
+void *threadB(void *arg) {
+  /* Wait for SemaphoreB */
+    sem_wait(&SemaphoreB);
+  while (endOfFile != 1){
+    
+    /* Mutex lock program */
+    pthread_mutex_lock(&Mutex);
+
+    /* Print thread information */
+    printf("Thread B running\n");
+
+    read(fileDescriptor[0], CollectFromPipe, MESSLENGTH);
+    printf("Passed through pipe: %s", CollectFromPipe);
+
+    //write new data to glocal variable
+    strcpy(lineData.strLine, CollectFromPipe);
+
+    /* Release mutex lock */
+    pthread_mutex_unlock(&Mutex);
+
+    /* Signal SemaphoreC */
+    sem_post(&SemaphoreC);
+    
+    /* Wait for SemaphoreB */
+    sem_wait(&SemaphoreB);
+  }
+  printf("Thread B says end of file!\n");
+   /* Signal SemaphoreC */
+   sem_post(&SemaphoreC);
+
+  return EXIT_SUCCESS;
+}
+
+void *threadC(void *arg) {
+  
+    /* Wait for SemaphoreC */
+  sem_wait(&SemaphoreC);
+
+  while (endOfFile != 1){
+
+  /* Mutex lock program */
+  pthread_mutex_lock(&Mutex);
+
+  /* Print thread information */
+  printf("Thread C running\n");
+  printf("Passed through global: %s", lineData.strLine);
+
+  FILE* file=fopen("src.txt", "a");
+
+  if (file == NULL)
+    {
+      printf("Error opening file!\n");
+      return EXIT_FAILURE;
+    }
+  fprintf(file, "%s", lineData.strLine);
+
+  printf("Written to file!\n");
+
+  /* Release mutex lock */
+  pthread_mutex_unlock(&Mutex);
+
+   //signal sempahore A
+   sem_post(&SemaphoreA);
+    
+  /* Wait for SemaphoreC */
+  sem_wait(&SemaphoreC);
+     
+  }
+printf("Thread C says end of file!\n");
+
+  return EXIT_SUCCESS;
+}
+
+void initialiseSharedMemory()
+{
+   	/* the size (in bytes) of the shared memory object */
+	 //set to 8 bytes becuase that's the size of a double
+	const int SIZE = 8;
+	/* name of the shared memory object */
+	const char *name = "shared";
+
+	/* shared memory file descriptor */
+	int shm_fd;
+
+	/* create the shared memory object */
+        /* shm_open(const char *name, int oflag, mode_t mode)*/
+	shm_fd = shm_open(name, O_CREAT | O_RDWR, 0666);
+
+	/* configrue the size of the shared memory object */
+	/* truncate sets the size of the shared memory */
+	ftruncate(shm_fd, SIZE);
+
+	/* memory map the shared memory object */
+	ptr = mmap (0, SIZE, PROT_WRITE, MAP_SHARED, shm_fd, 0);
+}
+
+double calculateTime(struct timeval startTime, struct timeval endTime)
+{
+	 double totalSeconds= (endTime.tv_sec - startTime.tv_sec);
+	 double totalMilliseconds = endTime.tv_usec - startTime.tv_usec;
+	 return  totalSeconds + (totalMilliseconds/(double)1000);
+}
