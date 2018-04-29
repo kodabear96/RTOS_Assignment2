@@ -1,3 +1,4 @@
+
 //create a pipe
 //three threads: 
 //A - writes one line of characters from a given "data.txt" file to the pipe  
@@ -139,15 +140,12 @@ void *threadA(void *arg) {
     if (file != NULL) {
       //265 is ideal line size
       char strLine[256];
-      int count = 0;
       while (fgets(strLine, sizeof strLine, file) != NULL) /* read a line */
 	{
-	  if (count == lineNumber)
-	  {
 	    printf("Original File: %s",strLine);
             write(fileDescriptor[1], strLine, MESSLENGTH);
 	    
-	     /* Release mutex lock */
+	    /* Release mutex lock */
 	    pthread_mutex_unlock(&Mutex);
 
 	    /* Signal SemaphoreB */
@@ -160,14 +158,6 @@ void *threadA(void *arg) {
 	    
 	     /* Print thread information */
 	    printf("Thread A running again!\n");
-
-	    lineNumber++;
-	  }
-	  else
-	  {
-            count++;
-	    printf("Count up to: %d\n", count);
-	  }
 	}
       fclose(file);
       endOfFile = 1; 
@@ -221,6 +211,15 @@ void *threadC(void *arg) {
     /* Wait for SemaphoreC */
   sem_wait(&SemaphoreC);
 
+  FILE* file=fopen("src.txt", "w");
+    if (file == NULL)
+    {
+      printf("Error opening file!\n");
+      return EXIT_FAILURE;
+    }
+
+  bool endOfHeader = 0;
+
   while (endOfFile != 1){
 
   /* Mutex lock program */
@@ -230,16 +229,18 @@ void *threadC(void *arg) {
   printf("Thread C running\n");
   printf("Passed through global: %s", lineData.strLine);
 
-  FILE* file=fopen("src.txt", "a");
-
-  if (file == NULL)
-    {
-      printf("Error opening file!\n");
-      return EXIT_FAILURE;
-    }
-  fprintf(file, "%s", lineData.strLine);
+  if(endOfHeader == 1)
+{
+    fprintf(file, "%s", lineData.strLine);
 
   printf("Written to file!\n");
+}
+
+
+  if(endOfHeader == 0 && strstr(lineData.strLine, "end_header") != NULL)
+{
+  endOfHeader = 1;
+}
 
   /* Release mutex lock */
   pthread_mutex_unlock(&Mutex);
